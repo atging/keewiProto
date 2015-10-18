@@ -15,6 +15,11 @@
 #define CHECKFREQUENCY  5000  // mS on/off status check frequency
 // not including 2 second delay in TCP connection
 
+// change these to float to be accurate at sub-int level
+int V_zero = 0;
+int I_zero = 0;
+int Ilow_zero = 0;
+
 int Triac      = 7;
 int LedBlue    = 8;
 int LedGreen   = 9;
@@ -74,7 +79,7 @@ int echoOnOffState(String keyword)
     if (Serial1.available())
     {
       char ch = Serial1.read();
-      Serial.write(ch);
+//      Serial.write(ch);
       if (count < keyword_length)
       {
         myregister[count] = ch;
@@ -85,17 +90,17 @@ int echoOnOffState(String keyword)
         for (uint8_t i=0; i < count; i++)
         {
           myregister[i] = myregister[i+1];
-          Serial.write(myregister[i]);
+//          Serial.write(myregister[i]);
         }
         myregister[count] = ch;
-        Serial.write(myregister[count]);
+//        Serial.write(myregister[count]);
       }
       if (ch == keyword[current_char])
       {
         if (++current_char == keyword_length)  // last char in keyword
         {
-          Serial.println();
-          // myregister[0] should hold the # in "#0,CLOSED", whether 0 or 1
+//          Serial.println();
+          // myregister[0] should hold the # in "#CLOSED", whether 0 or 1
           onOffValue = myregister[0] - '0';  // convert to integer
           return onOffValue;
         }
@@ -107,8 +112,8 @@ int echoOnOffState(String keyword)
         {                                 // this char is the start of keyword
           if (++current_char == keyword_length)  // last char in keyword
           {
-            Serial.println();
-            // myregister[0] should hold the # in "#0,CLOSED", whether 0 or 1
+//            Serial.println();
+            // myregister[0] should hold the # in "#CLOSED", whether 0 or 1
             onOffValue = myregister[0] - '0';  // convert to integer
             return onOffValue;
           }
@@ -203,11 +208,11 @@ void setup()
   // echoCommand("AT+CWLAP", "OK", CONTINUE); // List available access points - DOESN't WORK FOR ME
   
   echoCommand("AT+CWMODE=1", "", HALT);    // Station mode
-  echoCommand("AT+CIPMUX=0", "", HALT);    // Allow multiple connections (we'll only use the first).
+  echoCommand("AT+CIPMUX=0", "", HALT);    // Allow single connection only, no multiplexing
 
   //connect to the wifi
   boolean connection_established = false;
-  for(int i=0;i<5;i++)
+  for(uint8_t i=0;i<5;i++)
   {
     if(connectWiFi())
     {
@@ -217,16 +222,72 @@ void setup()
   }
   if (!connection_established) errorHalt("Connection failed");
   
-  delay(5000);
+//  delay(5000);
+
+  // Determine zero-crossing values of V, I and Ilow
+  // TODO: move this to a subroutine that returns the 3 zero numbers
+  Serial.println("Averaging ADC samples to determine zero-crossing values.");
+  int counter = 0;
+  uint32_t V_sum = 0;  // need more than 16 bit cuz sum goes up to ~2.5million
+  uint32_t I_sum = 0;
+  uint32_t Ilow_sum = 0;
+  while(counter<5000){
+    V_sum += analogRead(V_Sense);
+    I_sum += analogRead(I_Sense);
+    Ilow_sum += analogRead(I_SenseLow);
+    counter++;
+    delayMicroseconds(100);
+  }
+
+  V_zero = V_sum / counter;
+  I_zero = I_sum / counter;
+  Ilow_zero = Ilow_sum / counter;
+  Serial.print("Vzero = ");
+  Serial.print(V_zero);
+  Serial.print(", Izero = ");
+  Serial.print(I_zero);
+  Serial.print(", Ilowzero = ");
+  Serial.print(Ilow_zero);
 
   //echoCommand("AT+CWSAP=?", "OK", CONTINUE); // Test connection
   echoCommand("AT+CIFSR", "", HALT);         // Echo IP address. (Firmware bug - should return "OK".)
   //echoCommand("AT+CIPMUX=0", "", HALT);      // Set single connection mode  
+
 }
 
 // ******** LOOP ********
 void loop() 
 { 
+  Serial.println("Beginning ADC Test.");
+  float V_value = 0.0, V_sum = 0.0, rms_voltage = 0.0;
+  float I_value = 0.0, I_sum = 0.0, rms_current = 0.0;
+  float Ilow_value = 0.0, Ilow_sum = 0.0, rms_Ilow = 0.0;
+  unsigned long n = 0;
+  unsigned long now = millis() + 100;
+  while(millis()<now){
+    V_value = analogRead(V_Sense) - V_zero;
+    I_value = analogRead(I_Sense) - I_zero;
+    Ilow_value = analogRead(I_SenseLow) - Ilow_zero;
+    Serial.println(Ilow_value);
+    V_value *= V_value; // square
+    V_sum += V_value;
+    I_value *= I_value; // square
+    I_sum += I_value;
+    Ilow_value *= Ilow_value;
+    Ilow_sum += Ilow_value;
+    delayMicroseconds(1);
+    n++;
+  }  
+  rms_voltage = sqrt(V_sum / n);
+  Serial.print("VRMS = ");
+  Serial.println(rms_voltage);
+  rms_current = sqrt(I_sum / n);
+  Serial.print("IRMS = ");
+  Serial.println(rms_current);
+  rms_Ilow = sqrt(Ilow_sum / n);
+  Serial.print("IlowRMS = ");
+  Serial.println(rms_Ilow);
+  
   String cmd;
   // Establish TCP connection
   cmd = "AT+CIPSTART=\"TCP\",\""; cmd += DEST_IP; cmd += "\",80";
