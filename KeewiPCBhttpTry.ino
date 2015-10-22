@@ -12,13 +12,17 @@
 #define DEST_IP     "54.197.129.252"
 #define RESOURCE    "/keewi/api.php?action=GetStatus&user_id=11"
 #define HOST_PORT   80
-#define CHECKFREQUENCY  5000  // mS on/off status check frequency
+#define CHECKFREQUENCY  15000  // mS on/off status check frequency
 // not including 2 second delay in TCP connection
 
 // change these to float to be accurate at sub-int level
 int V_zero = 0;
 int I_zero = 0;
 int Ilow_zero = 0;
+bool switchStatus = false;
+float Ilow_cal  = 0.0023; // amp/DV
+float I_cal     = 0.0625; // amp/DV
+float V_cal     = 1.123;  // volts/DV
 
 int Triac      = 7;
 int LedBlue    = 8;
@@ -195,6 +199,31 @@ void setup()
   Serial1.setTimeout(TIMEOUT);
   Serial.println("ESP8266 Demo");
 
+  // Determine zero-crossing values of V, I and Ilow
+  // TODO: move this to a subroutine that returns the 3 zero numbers
+  Serial.println("Averaging ADC samples to determine zero-crossing values.");
+  int counter = 0;
+  uint32_t V_sum = 0;  // need more than 16 bit cuz sum goes up to ~2.5million
+  uint32_t I_sum = 0;
+  uint32_t Ilow_sum = 0;
+  while(counter<5000){
+    V_sum += analogRead(V_Sense);
+    I_sum += analogRead(I_Sense);
+    Ilow_sum += analogRead(I_SenseLow);
+    counter++;
+    delayMicroseconds(100);
+  }
+
+  V_zero = V_sum / counter;
+  I_zero = I_sum / counter;
+  Ilow_zero = Ilow_sum / counter;
+  Serial.print("Vzero = ");
+  Serial.print(V_zero);
+  Serial.print(", Izero = ");
+  Serial.print(I_zero);
+  Serial.print(", Ilowzero = ");
+  Serial.print(Ilow_zero);
+
   pinMode(WiFiResetPin, OUTPUT);
   digitalWrite(WiFiResetPin, HIGH);
   
@@ -221,33 +250,8 @@ void setup()
     }
   }
   if (!connection_established) errorHalt("Connection failed");
-  
-//  delay(5000);
 
-  // Determine zero-crossing values of V, I and Ilow
-  // TODO: move this to a subroutine that returns the 3 zero numbers
-  Serial.println("Averaging ADC samples to determine zero-crossing values.");
-  int counter = 0;
-  uint32_t V_sum = 0;  // need more than 16 bit cuz sum goes up to ~2.5million
-  uint32_t I_sum = 0;
-  uint32_t Ilow_sum = 0;
-  while(counter<5000){
-    V_sum += analogRead(V_Sense);
-    I_sum += analogRead(I_Sense);
-    Ilow_sum += analogRead(I_SenseLow);
-    counter++;
-    delayMicroseconds(100);
-  }
-
-  V_zero = V_sum / counter;
-  I_zero = I_sum / counter;
-  Ilow_zero = Ilow_sum / counter;
-  Serial.print("Vzero = ");
-  Serial.print(V_zero);
-  Serial.print(", Izero = ");
-  Serial.print(I_zero);
-  Serial.print(", Ilowzero = ");
-  Serial.print(Ilow_zero);
+  delay(5000);
 
   //echoCommand("AT+CWSAP=?", "OK", CONTINUE); // Test connection
   echoCommand("AT+CIFSR", "", HALT);         // Echo IP address. (Firmware bug - should return "OK".)
@@ -259,6 +263,17 @@ void setup()
 void loop() 
 { 
   Serial.println("Beginning ADC Test.");
+  if (switchStatus)
+  {
+    digitalWrite(Triac, LOW);
+    switchStatus = false;
+  }
+  else
+  {
+    digitalWrite(Triac, HIGH);
+    switchStatus = true;
+  }
+  
   float V_value = 0.0, V_sum = 0.0, rms_voltage = 0.0;
   float I_value = 0.0, I_sum = 0.0, rms_current = 0.0;
   float Ilow_value = 0.0, Ilow_sum = 0.0, rms_Ilow = 0.0;
@@ -280,14 +295,20 @@ void loop()
   }  
   rms_voltage = sqrt(V_sum / n);
   Serial.print("VRMS = ");
-  Serial.println(rms_voltage);
+  Serial.print(rms_voltage);
+  Serial.print(" (DV), volts = ");
+  Serial.println(rms_voltage * V_cal);
   rms_current = sqrt(I_sum / n);
   Serial.print("IRMS = ");
-  Serial.println(rms_current);
+  Serial.print(rms_current);
+  Serial.print(" (DV), amps = ");
+  Serial.println(rms_current * I_cal);
   rms_Ilow = sqrt(Ilow_sum / n);
   Serial.print("IlowRMS = ");
-  Serial.println(rms_Ilow);
-  
+  Serial.print(rms_Ilow);
+  Serial.print(" (DV), amps = ");
+  Serial.println(rms_Ilow * Ilow_cal);
+
   String cmd;
   // Establish TCP connection
   cmd = "AT+CIPSTART=\"TCP\",\""; cmd += DEST_IP; cmd += "\",80";
@@ -316,7 +337,7 @@ void loop()
   String  out = "statusValue = ";
   
   // Loop forever echoing data received from destination server.
-  while (Serial1.available())          
+  while (Serial1.available())
   {  // Need the integer (0 or 1) immediately prior to this: "0,CLOSED"  
     statusValue = echoOnOffState("CLOSED");
     if (statusValue == 1)
@@ -331,7 +352,7 @@ void loop()
       Serial.write(Serial1.read());
     }
   }
-    
+  
   delay(CHECKFREQUENCY);
 //  errorHalt("ONCE ONLY");
 }
